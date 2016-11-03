@@ -98,6 +98,7 @@ struct nvme_dev {
 	int q_depth;
 	u32 db_stride;
 	void __iomem *bar;
+	phys_addr_t bar_phys_addr;
 	struct work_struct reset_work;
 	struct work_struct remove_work;
 	struct timer_list watchdog_timer;
@@ -1578,7 +1579,7 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	if (size > 8192) {
 		iounmap(dev->bar);
 		do {
-			dev->bar = ioremap(pci_resource_start(pdev, 0), size);
+			dev->bar = ioremap(dev->bar_phys_addr, size);
 			if (dev->bar)
 				break;
 			if (dev->num_p2p_queues)
@@ -2092,15 +2093,18 @@ static const struct nvme_ctrl_ops nvme_pci_ctrl_ops = {
 
 static int nvme_dev_map(struct nvme_dev *dev)
 {
+	phys_addr_t phys_addr;
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
 
 	if (pci_request_mem_regions(pdev, "nvme"))
 		return -ENODEV;
 
-	dev->bar = ioremap(pci_resource_start(pdev, 0), 8192);
+	phys_addr = pci_resource_start(pdev, 0);
+	dev->bar = ioremap(phys_addr, 8192);
 	if (!dev->bar)
 		goto release;
 
+	dev->bar_phys_addr = phys_addr;
 	return 0;
   release:
 	pci_release_mem_regions(pdev);
