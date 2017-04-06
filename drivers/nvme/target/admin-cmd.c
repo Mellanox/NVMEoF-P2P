@@ -203,8 +203,11 @@ static void nvmet_execute_identify_ctrl(struct nvmet_req *req)
 	/* we support multiple ports and multiples hosts: */
 	id->cmic = (1 << 0) | (1 << 1);
 
-	/* no limit on data transfer sizes for now */
-	id->mdts = 0;
+	/*
+	 * limit the data transfer size in offload case to 128k for now
+	 * otherwise, no limit
+	 */
+	id->mdts = req->port->offload ? 5 : 0;
 	id->cntlid = cpu_to_le16(ctrl->cntlid);
 	id->ver = cpu_to_le32(ctrl->subsys->ver);
 
