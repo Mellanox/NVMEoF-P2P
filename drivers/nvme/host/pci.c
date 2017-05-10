@@ -66,6 +66,12 @@ static bool use_cmb_sqes = true;
 module_param(use_cmb_sqes, bool, 0644);
 MODULE_PARM_DESC(use_cmb_sqes, "use controller's memory buffer for I/O SQes");
 
+static int num_p2p_queues = 0;
+module_param(num_p2p_queues, int, S_IRUGO);
+MODULE_PARM_DESC(num_p2p_queues,
+		 "number of I/O queues to create for peer-to-peer data transfer per pci function (Default: 0)");
+
+
 static struct workqueue_struct *nvme_workq;
 
 struct nvme_dev;
@@ -108,6 +114,8 @@ struct nvme_dev {
 	dma_addr_t dbbuf_dbs_dma_addr;
 	u32 *dbbuf_eis;
 	dma_addr_t dbbuf_eis_dma_addr;
+
+	int num_p2p_queues;
 };
 
 static inline unsigned int sq_idx(unsigned int qid, u32 stride)
@@ -151,6 +159,9 @@ struct nvme_queue {
 	u32 *dbbuf_cq_db;
 	u32 *dbbuf_sq_ei;
 	u32 *dbbuf_cq_ei;
+
+	/* p2p */
+	bool p2p;
 };
 
 /*
@@ -891,8 +902,10 @@ static int adapter_alloc_cq(struct nvme_dev *dev, u16 qid,
 						struct nvme_queue *nvmeq)
 {
 	struct nvme_command c;
-	int flags = NVME_QUEUE_PHYS_CONTIG | NVME_CQ_IRQ_ENABLED;
+	int flags = NVME_QUEUE_PHYS_CONTIG;
 
+	if (!nvmeq->p2p)
+		flags |= NVME_CQ_IRQ_ENABLED;
 	/*
 	 * Note: we (ab)use the fact the the prp fields survive if no data
 	 * is attached to the request.
@@ -1072,7 +1085,8 @@ static int nvme_suspend_queue(struct nvme_queue *nvmeq)
 		spin_unlock_irq(&nvmeq->q_lock);
 		return 1;
 	}
-	vector = nvmeq->cq_vector;
+	if (!nvmeq->p2p)
+		vector = nvmeq->cq_vector;
 	nvmeq->dev->online_queues--;
 	nvmeq->cq_vector = -1;
 	spin_unlock_irq(&nvmeq->q_lock);
@@ -1080,7 +1094,8 @@ static int nvme_suspend_queue(struct nvme_queue *nvmeq)
 	if (!nvmeq->qid && nvmeq->dev->ctrl.admin_q)
 		blk_mq_stop_hw_queues(nvmeq->dev->ctrl.admin_q);
 
-	pci_free_irq(to_pci_dev(nvmeq->dev->dev), vector, nvmeq);
+	if (!nvmeq->p2p)
+		pci_free_irq(to_pci_dev(nvmeq->dev->dev), vector, nvmeq);
 
 	return 0;
 }
@@ -1172,6 +1187,7 @@ static struct nvme_queue *nvme_alloc_queue(struct nvme_dev *dev, int qid,
 	nvmeq->q_depth = depth;
 	nvmeq->qid = qid;
 	nvmeq->cq_vector = -1;
+	nvmeq->p2p = qid > (dev->max_qid - dev->num_p2p_queues);
 	dev->queues[qid] = nvmeq;
 	dev->queue_count++;
 
@@ -1228,9 +1244,11 @@ static int nvme_create_queue(struct nvme_queue *nvmeq, int qid)
 	if (result < 0)
 		goto release_cq;
 
-	result = queue_request_irq(nvmeq);
-	if (result < 0)
-		goto release_sq;
+	if (!nvmeq->p2p) {
+		result = queue_request_irq(nvmeq);
+		if (result < 0)
+			goto release_sq;
+	}
 
 	nvme_init_queue(nvmeq, qid);
 	return result;
@@ -1421,12 +1439,18 @@ static void nvme_watchdog_timer(unsigned long data)
 static int nvme_create_io_queues(struct nvme_dev *dev)
 {
 	unsigned i, max;
-	int ret = 0;
+	int ret = 0, node;
 
 	for (i = dev->queue_count; i <= dev->max_qid; i++) {
-		/* vector == qid - 1, match nvme_create_queue */
-		if (!nvme_alloc_queue(dev, i, dev->q_depth,
-		     pci_irq_get_node(to_pci_dev(dev->dev), i - 1))) {
+		/*
+		 * for non p2p - vector == qid - 1, match nvme_create_queue
+		 * for p2p queue - since we don't have vector, use device node
+		 * for allocation.
+		 */
+		node = i > (dev->max_qid - dev->num_p2p_queues) ?
+			dev_to_node(dev->dev) :
+			pci_irq_get_node(to_pci_dev(dev->dev), i - 1);
+		if (!nvme_alloc_queue(dev, i, dev->q_depth, node)) {
 			ret = -ENOMEM;
 			break;
 		}
@@ -1525,7 +1549,7 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
 	int result, nr_io_queues, size;
 
-	nr_io_queues = num_online_cpus();
+	nr_io_queues = num_online_cpus() + dev->num_p2p_queues;
 	result = nvme_set_queue_count(&dev->ctrl, &nr_io_queues);
 	if (result < 0)
 		return result;
@@ -1542,6 +1566,14 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 			nvme_release_cmb(dev);
 	}
 
+	if (dev->num_p2p_queues) {
+		if (nr_io_queues > num_online_cpus())
+			dev->num_p2p_queues = nr_io_queues - num_online_cpus();
+		else if (nr_io_queues > 1)
+			dev->num_p2p_queues = 1;// dedicate at least 1 queue for p2p
+		else
+			dev->num_p2p_queues = 0;// dedicate the only io queue for non p2p
+	}
 	size = db_bar_size(dev, nr_io_queues);
 	if (size > 8192) {
 		iounmap(dev->bar);
@@ -1549,6 +1581,8 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 			dev->bar = ioremap(pci_resource_start(pdev, 0), size);
 			if (dev->bar)
 				break;
+			if (dev->num_p2p_queues)
+				dev->num_p2p_queues--;
 			if (!--nr_io_queues)
 				return -ENOMEM;
 			size = db_bar_size(dev, nr_io_queues);
@@ -1565,11 +1599,11 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	 * setting up the full range we need.
 	 */
 	pci_free_irq_vectors(pdev);
-	nr_io_queues = pci_alloc_irq_vectors(pdev, 1, nr_io_queues,
+	nr_io_queues = pci_alloc_irq_vectors(pdev, 1, nr_io_queues - dev->num_p2p_queues,
 			PCI_IRQ_ALL_TYPES | PCI_IRQ_AFFINITY);
 	if (nr_io_queues <= 0)
 		return -EIO;
-	dev->max_qid = nr_io_queues;
+	dev->max_qid = nr_io_queues + dev->num_p2p_queues;
 
 	/*
 	 * Should investigate if there's a performance win from allocating
@@ -1598,7 +1632,7 @@ static void nvme_del_cq_end(struct request *req, int error)
 {
 	struct nvme_queue *nvmeq = req->end_io_data;
 
-	if (!error) {
+	if (!error && !nvmeq->p2p) {
 		unsigned long flags;
 
 		/*
@@ -1673,9 +1707,11 @@ static void nvme_disable_io_queues(struct nvme_dev *dev, int queues)
  */
 static int nvme_dev_add(struct nvme_dev *dev)
 {
+	unsigned nr_hw_queues = dev->online_queues - 1 - dev->num_p2p_queues;
+
 	if (!dev->ctrl.tagset) {
 		dev->tagset.ops = &nvme_mq_ops;
-		dev->tagset.nr_hw_queues = dev->online_queues - 1;
+		dev->tagset.nr_hw_queues = nr_hw_queues;
 		dev->tagset.timeout = NVME_IO_TIMEOUT;
 		dev->tagset.numa_node = dev_to_node(dev->dev);
 		dev->tagset.queue_depth =
@@ -1690,7 +1726,7 @@ static int nvme_dev_add(struct nvme_dev *dev)
 
 		nvme_dbbuf_set(dev);
 	} else {
-		blk_mq_update_nr_hw_queues(&dev->tagset, dev->online_queues - 1);
+		blk_mq_update_nr_hw_queues(&dev->tagset, nr_hw_queues);
 
 		/* Free previously allocated queues that are no longer usable */
 		nvme_free_queues(dev, dev->online_queues);
@@ -2104,11 +2140,12 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	dev = kzalloc_node(sizeof(*dev), GFP_KERNEL, node);
 	if (!dev)
 		return -ENOMEM;
-	dev->queues = kzalloc_node((num_possible_cpus() + 1) * sizeof(void *),
+	dev->queues = kzalloc_node((num_possible_cpus() + 1 + num_p2p_queues) * sizeof(void *),
 							GFP_KERNEL, node);
 	if (!dev->queues)
 		goto free;
 
+	dev->num_p2p_queues = num_p2p_queues;
 	dev->dev = get_device(&pdev->dev);
 	pci_set_drvdata(pdev, dev);
 
