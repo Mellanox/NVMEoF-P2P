@@ -22,6 +22,8 @@
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/nvme.h>
+#include <linux/nvme-peer.h>
+#include <linux/pci.h>
 #include <linux/configfs.h>
 #include <linux/rcupdate.h>
 #include <linux/blkdev.h>
@@ -42,6 +44,7 @@ struct nvmet_ns {
 	struct list_head	dev_link;
 	struct percpu_ref	ref;
 	struct block_device	*bdev;
+	struct pci_dev		*pdev;
 	u32			nsid;
 	u32			blksize_shift;
 	loff_t			size;
