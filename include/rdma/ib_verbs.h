@@ -227,6 +227,8 @@ enum ib_device_cap_flags {
 	/* Deprecated. Please use IB_RAW_PACKET_CAP_SCATTER_FCS. */
 	IB_DEVICE_RAW_SCATTER_FCS		= (1ULL << 34),
 	IB_DEVICE_RDMA_NETDEV_OPA_VNIC		= (1ULL << 35),
+	/* Jump to this value to minimize conflicts with upstream */
+	IB_DEVICE_NVMF_TARGET_OFFLOAD		= (1ULL << 60),
 };
 
 enum ib_signature_prot_cap {
@@ -244,6 +246,25 @@ enum ib_atomic_cap {
 	IB_ATOMIC_NONE,
 	IB_ATOMIC_HCA,
 	IB_ATOMIC_GLOB
+};
+
+struct ib_nvmf_caps {
+	u32 offload_type_dc; /* bitmap of ib_nvmf_offload_type enum */
+	u32 offload_type_rc; /* bitmap of ib_nvmf_offload_type enum */
+	u32 max_namespace;
+	u32 max_staging_buffer_sz;
+	u32 min_staging_buffer_sz;
+	u32 max_io_sz;
+	u32 max_be_ctrl;
+	u32 max_queue_sz;
+	u32 min_queue_sz;
+	u32 min_cmd_size;
+	u32 max_cmd_size;
+	u8  max_data_offset;
+};
+
+enum ib_qp_offload_type {
+	IB_QP_OFFLOAD_NVMF = 1,
 };
 
 enum ib_odp_general_cap_bits {
@@ -333,6 +354,7 @@ struct ib_device_attr {
 	int			sig_prot_cap;
 	int			sig_guard_cap;
 	struct ib_odp_caps	odp_caps;
+	struct ib_nvmf_caps	nvmf_caps;
 	uint64_t		timestamp_mask;
 	uint64_t		hca_core_clock; /* in KHZ */
 	struct ib_rss_caps	rss_caps;
@@ -1189,7 +1211,8 @@ enum ib_qp_attr_mask {
 	IB_QP_RESERVED1			= (1<<21),
 	IB_QP_RESERVED2			= (1<<22),
 	IB_QP_RESERVED3			= (1<<23),
-	IB_QP_RESERVED4			= (1<<24),
+	/* we might need to update this bit after upstream rebase */
+	IB_QP_OFFLOAD_TYPE		= (1<<24),
 	IB_QP_RATE_LIMIT		= (1<<25),
 };
 
@@ -1241,6 +1264,7 @@ struct ib_qp_attr {
 	u8			alt_port_num;
 	u8			alt_timeout;
 	u32			rate_limit;
+	enum ib_qp_offload_type	offload_type;
 };
 
 enum ib_wr_opcode {
