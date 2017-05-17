@@ -2000,6 +2000,38 @@ struct rdma_netdev {
 			    union ib_gid *gid, u16 mlid);
 };
 
+/* NVMEoF target offload structures */
+struct ib_nvmf_ctrl {
+	struct ib_srq	*srq;
+	u32		id;
+	atomic_t	usecnt; /* count all attached namespaces */
+};
+
+struct ib_nvmf_backend_ctrl_init_attr {
+	u32		cq_page_offset;
+	u32		sq_page_offset;
+	u8		cq_log_page_size;
+	u8		sq_log_page_size;
+	u16		initial_cqh_db_value;
+	u16		initial_sqt_db_value;
+	u64		cqh_dbr_addr;
+	u64		sqt_dbr_addr;
+	u64		cq_pas;
+	u64		sq_pas;
+};
+
+struct ib_nvmf_ns {
+	struct ib_nvmf_ctrl	*ctrl;
+	u32			nsid;
+};
+
+struct ib_nvmf_ns_init_attr {
+	u32		frontend_namespace;
+	u32		backend_namespace;
+	u16		lba_data_size;
+	u16		backend_ctrl_id;
+};
+
 struct ib_device {
 	/* Do not access @dma_device directly from ULP nor from HW drivers. */
 	struct device                *dma_device;
@@ -2267,6 +2299,15 @@ struct ib_device {
 					unsigned char name_assign_type,
 					void (*setup)(struct net_device *));
 	void (*free_rdma_netdev)(struct net_device *netdev);
+	/*
+	 * NVMEoF target offload operations
+	 */
+	struct ib_nvmf_ctrl *   (*create_nvmf_backend_ctrl)(struct ib_srq *srq,
+				struct ib_nvmf_backend_ctrl_init_attr *init_attr);
+	int                     (*destroy_nvmf_backend_ctrl)(struct ib_nvmf_ctrl *ctrl);
+	struct ib_nvmf_ns *     (*attach_nvmf_ns)(struct ib_nvmf_ctrl *ctrl,
+				struct ib_nvmf_ns_init_attr *init_attr);
+	int                     (*detach_nvmf_ns)(struct ib_nvmf_ns *ns);
 
 	struct module               *owner;
 	struct device                dev;
@@ -3545,6 +3586,14 @@ int ib_sg_to_pages(struct ib_mr *mr, struct scatterlist *sgl, int sg_nents,
 void ib_drain_rq(struct ib_qp *qp);
 void ib_drain_sq(struct ib_qp *qp);
 void ib_drain_qp(struct ib_qp *qp);
+
+/* NVMEoF target offload EXP API */
+struct ib_nvmf_ctrl *ib_create_nvmf_backend_ctrl(struct ib_srq *srq,
+		struct ib_nvmf_backend_ctrl_init_attr *init_attr);
+int ib_destroy_nvmf_backend_ctrl(struct ib_nvmf_ctrl *ctrl);
+struct ib_nvmf_ns *ib_attach_nvmf_ns(struct ib_nvmf_ctrl *ctrl,
+			struct ib_nvmf_ns_init_attr *init_attr);
+int ib_detach_nvmf_ns(struct ib_nvmf_ns *ns);
 
 int ib_resolve_eth_dmac(struct ib_device *device,
 			struct rdma_ah_attr *ah_attr);
