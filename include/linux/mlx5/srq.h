@@ -41,6 +41,28 @@ enum {
 	MLX5_SRQ_FLAG_RNDV   = (1 << 2),
 };
 
+enum mlx5_nvmf_offload_type {
+	MLX5_NVMF_WRITE_OFFLOAD			= 1,
+	MLX5_NVMF_READ_OFFLOAD			= 2,
+	MLX5_NVMF_READ_WRITE_OFFLOAD		= 3,
+	MLX5_NVMF_READ_WRITE_FLUSH_OFFLOAD	= 4,
+};
+
+struct mlx5_nvmf_attr {
+	enum mlx5_nvmf_offload_type	type;
+	u8				log_max_namespace;
+	u32				offloaded_capsules_count;
+	u32				ioccsz;
+	u8				icdoff;
+	u8				log_max_io_size;
+	u8				nvme_memory_log_page_size;
+	u8				staging_buffer_log_page_size;
+	u16				staging_buffer_number_of_pages;
+	u8				staging_buffer_page_offset;
+	u16				nvme_queue_size;
+	u64				*staging_buffer_pas;
+};
+
 struct mlx5_srq_attr {
 	u32 type;
 	u32 flags;
@@ -58,6 +80,7 @@ struct mlx5_srq_attr {
 	u64 db_record;
 	__be64 *pas;
 	u32 tm_log_list_size;
+	struct mlx5_nvmf_attr nvmf;
 };
 
 struct mlx5_core_dev;
