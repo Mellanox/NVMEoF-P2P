@@ -1697,12 +1697,12 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	}
 
 	if (dev->num_p2p_queues) {
-		if (nr_io_queues > num_online_cpus())
-			dev->num_p2p_queues = nr_io_queues - num_online_cpus();
-		else if (nr_io_queues > 1)
-			dev->num_p2p_queues = 1;// dedicate at least 1 queue for p2p
-		else
-			dev->num_p2p_queues = 0;// dedicate the only io queue for non p2p
+		if (nr_io_queues <= dev->num_p2p_queues) {
+			if (nr_io_queues > 1)
+				dev->num_p2p_queues = nr_io_queues - 1;//dedicate only 1 io queue for non p2p
+			else
+				dev->num_p2p_queues = 0;//dedicate the only io queue for non p2p
+		}
 	}
 	size = db_bar_size(dev, nr_io_queues);
 	if (size > 8192) {
