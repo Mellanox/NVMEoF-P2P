@@ -1583,6 +1583,7 @@ static struct nvmet_fabrics_ops nvmet_rdma_ops = {
 	.install_offload_queue	= nvmet_rdma_install_offload_queue,
 	.create_offload_ctrl	= nvmet_rdma_create_offload_ctrl,
 	.destroy_offload_ctrl	= nvmet_rdma_destroy_offload_ctrl,
+	.peer_to_peer_sqe_inline_size = nvmet_rdma_peer_to_peer_sqe_inline_size,
 };
 
 static int __init nvmet_rdma_init(void)
