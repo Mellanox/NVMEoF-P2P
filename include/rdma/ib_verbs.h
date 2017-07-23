@@ -227,6 +227,8 @@ enum ib_device_cap_flags {
 	/* Deprecated. Please use IB_RAW_PACKET_CAP_SCATTER_FCS. */
 	IB_DEVICE_RAW_SCATTER_FCS		= (1ULL << 34),
 	IB_DEVICE_RDMA_NETDEV_OPA_VNIC		= (1ULL << 35),
+	/* Jump to this value to minimize conflicts with upstream */
+	IB_DEVICE_NVMF_TARGET_OFFLOAD		= (1ULL << 60),
 };
 
 enum ib_signature_prot_cap {
@@ -244,6 +246,25 @@ enum ib_atomic_cap {
 	IB_ATOMIC_NONE,
 	IB_ATOMIC_HCA,
 	IB_ATOMIC_GLOB
+};
+
+struct ib_nvmf_caps {
+	u32 offload_type_dc; /* bitmap of ib_nvmf_offload_type enum */
+	u32 offload_type_rc; /* bitmap of ib_nvmf_offload_type enum */
+	u32 max_namespace;
+	u32 max_staging_buffer_sz;
+	u32 min_staging_buffer_sz;
+	u32 max_io_sz;
+	u32 max_be_ctrl;
+	u32 max_queue_sz;
+	u32 min_queue_sz;
+	u32 min_cmd_size;
+	u32 max_cmd_size;
+	u8  max_data_offset;
+};
+
+enum ib_qp_offload_type {
+	IB_QP_OFFLOAD_NVMF = 1,
 };
 
 enum ib_odp_general_cap_bits {
@@ -333,6 +354,7 @@ struct ib_device_attr {
 	int			sig_prot_cap;
 	int			sig_guard_cap;
 	struct ib_odp_caps	odp_caps;
+	struct ib_nvmf_caps	nvmf_caps;
 	uint64_t		timestamp_mask;
 	uint64_t		hca_core_clock; /* in KHZ */
 	struct ib_rss_caps	rss_caps;
@@ -966,12 +988,43 @@ enum ib_cq_notify_flags {
 
 enum ib_srq_type {
 	IB_SRQT_BASIC,
-	IB_SRQT_XRC
+	IB_SRQT_XRC,
+	IB_EXP_SRQT_TAG_MATCHING = 32,
+	IB_EXP_SRQT_NVMF,
 };
+
+static inline bool ib_srq_has_cq(enum ib_srq_type srq_type)
+{
+	return srq_type == IB_SRQT_XRC ||
+	       srq_type == IB_EXP_SRQT_TAG_MATCHING ||
+	       srq_type == IB_EXP_SRQT_NVMF;
+}
 
 enum ib_srq_attr_mask {
 	IB_SRQ_MAX_WR	= 1 << 0,
 	IB_SRQ_LIMIT	= 1 << 1,
+};
+
+enum ib_nvmf_offload_type {
+	IB_NVMF_WRITE_OFFLOAD		 = (1ULL << 0),
+	IB_NVMF_READ_OFFLOAD		 = (1ULL << 1),
+	IB_NVMF_READ_WRITE_OFFLOAD	 = (1ULL << 2),
+	IB_NVMF_READ_WRITE_FLUSH_OFFLOAD = (1ULL << 3),
+};
+
+struct ib_nvmf_init_data {
+	enum ib_nvmf_offload_type	type;
+	u8				log_max_namespace;
+	u32				offloaded_capsules_count;
+	u32				cmd_size;
+	u8				data_offset;
+	u8				log_max_io_size;
+	u8				nvme_memory_log_page_size;
+	u8				staging_buffer_log_page_size;
+	u16				staging_buffer_number_of_pages;
+	u32				staging_buffer_page_offset;
+	u16				nvme_queue_size;
+	u64				*staging_buffer_pas;
 };
 
 struct ib_srq_attr {
@@ -986,11 +1039,14 @@ struct ib_srq_init_attr {
 	struct ib_srq_attr	attr;
 	enum ib_srq_type	srq_type;
 
-	union {
-		struct {
-			struct ib_xrcd *xrcd;
-			struct ib_cq   *cq;
-		} xrc;
+	struct {
+		struct ib_cq   *cq;
+		union {
+			struct {
+				struct ib_xrcd *xrcd;
+			} xrc;
+		};
+		struct ib_nvmf_init_data nvmf;
 	} ext;
 };
 
@@ -1155,7 +1211,8 @@ enum ib_qp_attr_mask {
 	IB_QP_RESERVED1			= (1<<21),
 	IB_QP_RESERVED2			= (1<<22),
 	IB_QP_RESERVED3			= (1<<23),
-	IB_QP_RESERVED4			= (1<<24),
+	/* we might need to update this bit after upstream rebase */
+	IB_QP_OFFLOAD_TYPE		= (1<<24),
 	IB_QP_RATE_LIMIT		= (1<<25),
 };
 
@@ -1207,6 +1264,7 @@ struct ib_qp_attr {
 	u8			alt_port_num;
 	u8			alt_timeout;
 	u32			rate_limit;
+	enum ib_qp_offload_type	offload_type;
 };
 
 enum ib_wr_opcode {
@@ -1527,12 +1585,14 @@ struct ib_srq {
 	enum ib_srq_type	srq_type;
 	atomic_t		usecnt;
 
-	union {
-		struct {
-			struct ib_xrcd *xrcd;
-			struct ib_cq   *cq;
-			u32		srq_num;
-		} xrc;
+	struct {
+		struct ib_cq   *cq;
+		union {
+			struct {
+				struct ib_xrcd *xrcd;
+				u32		srq_num;
+			} xrc;
+		};
 	} ext;
 };
 
@@ -1940,6 +2000,38 @@ struct rdma_netdev {
 			    union ib_gid *gid, u16 mlid);
 };
 
+/* NVMEoF target offload structures */
+struct ib_nvmf_ctrl {
+	struct ib_srq	*srq;
+	u32		id;
+	atomic_t	usecnt; /* count all attached namespaces */
+};
+
+struct ib_nvmf_backend_ctrl_init_attr {
+	u32		cq_page_offset;
+	u32		sq_page_offset;
+	u8		cq_log_page_size;
+	u8		sq_log_page_size;
+	u16		initial_cqh_db_value;
+	u16		initial_sqt_db_value;
+	u64		cqh_dbr_addr;
+	u64		sqt_dbr_addr;
+	u64		cq_pas;
+	u64		sq_pas;
+};
+
+struct ib_nvmf_ns {
+	struct ib_nvmf_ctrl	*ctrl;
+	u32			nsid;
+};
+
+struct ib_nvmf_ns_init_attr {
+	u32		frontend_namespace;
+	u32		backend_namespace;
+	u16		lba_data_size;
+	u16		backend_ctrl_id;
+};
+
 struct ib_device {
 	/* Do not access @dma_device directly from ULP nor from HW drivers. */
 	struct device                *dma_device;
@@ -2207,6 +2299,15 @@ struct ib_device {
 					unsigned char name_assign_type,
 					void (*setup)(struct net_device *));
 	void (*free_rdma_netdev)(struct net_device *netdev);
+	/*
+	 * NVMEoF target offload operations
+	 */
+	struct ib_nvmf_ctrl *   (*create_nvmf_backend_ctrl)(struct ib_srq *srq,
+				struct ib_nvmf_backend_ctrl_init_attr *init_attr);
+	int                     (*destroy_nvmf_backend_ctrl)(struct ib_nvmf_ctrl *ctrl);
+	struct ib_nvmf_ns *     (*attach_nvmf_ns)(struct ib_nvmf_ctrl *ctrl,
+				struct ib_nvmf_ns_init_attr *init_attr);
+	int                     (*detach_nvmf_ns)(struct ib_nvmf_ns *ns);
 
 	struct module               *owner;
 	struct device                dev;
@@ -3485,6 +3586,14 @@ int ib_sg_to_pages(struct ib_mr *mr, struct scatterlist *sgl, int sg_nents,
 void ib_drain_rq(struct ib_qp *qp);
 void ib_drain_sq(struct ib_qp *qp);
 void ib_drain_qp(struct ib_qp *qp);
+
+/* NVMEoF target offload EXP API */
+struct ib_nvmf_ctrl *ib_create_nvmf_backend_ctrl(struct ib_srq *srq,
+		struct ib_nvmf_backend_ctrl_init_attr *init_attr);
+int ib_destroy_nvmf_backend_ctrl(struct ib_nvmf_ctrl *ctrl);
+struct ib_nvmf_ns *ib_attach_nvmf_ns(struct ib_nvmf_ctrl *ctrl,
+			struct ib_nvmf_ns_init_attr *init_attr);
+int ib_detach_nvmf_ns(struct ib_nvmf_ns *ns);
 
 int ib_resolve_eth_dmac(struct ib_device *device,
 			struct rdma_ah_attr *ah_attr);

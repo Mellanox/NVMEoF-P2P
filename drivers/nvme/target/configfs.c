@@ -16,6 +16,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/stat.h>
+#include <linux/string.h>
 #include <linux/ctype.h>
 
 #include "nvmet.h"
@@ -376,10 +377,99 @@ static ssize_t nvmet_ns_enable_store(struct config_item *item,
 
 CONFIGFS_ATTR(nvmet_ns_, enable);
 
+static ssize_t nvmet_ns_pci_device_path_show(struct config_item *item, char *page)
+{
+	struct pci_dev *pdev = to_nvmet_ns(item)->pdev;
+
+	return sprintf(page, "%s\n", pdev ? dev_name(&pdev->dev) : "N/A");
+}
+
+static ssize_t nvmet_ns_pci_device_path_store(struct config_item *item,
+		const char *page, size_t count)
+{
+	struct nvmet_ns *ns = to_nvmet_ns(item);
+	struct nvmet_subsys *subsys = ns->subsys;
+	struct pci_dev *pdev;
+	char *token, *buf, *orig_buf;
+	int domain, slot, function;
+	unsigned int bus;
+	int ret = 0;
+
+	mutex_lock(&subsys->lock);
+	if (ns->enabled) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+
+	if (ns->pdev) {
+		pci_dev_put(ns->pdev);
+		ns->pdev = NULL;
+	}
+
+	if (!strcmp(page, "clear"))
+		goto out;
+
+	buf = kstrndup(page, count, GFP_KERNEL);
+	if (!buf) {
+		ret = -ENOMEM;
+		goto out_unlock;
+	}
+
+	orig_buf = buf;
+	if ((token = strsep(&buf, ":")) != NULL) {
+		ret = kstrtoint(token, 16, &domain);
+		if (ret) {
+			pr_err("please supply domain ID for PCI p2p establishment\n");
+			goto free_buf;
+		}
+	}
+	if ((token = strsep(&buf, ":")) != NULL) {
+		ret = kstrtouint(token, 16, &bus);
+		if (ret) {
+			pr_err("please supply bus ID for PCI p2p establishment\n");
+			goto free_buf;
+		}
+	}
+	if ((token = strsep(&buf, ".")) != NULL) {
+		ret = kstrtoint(token, 16, &slot);
+		if (ret) {
+			pr_err("please supply slot ID for PCI p2p establishment\n");
+			goto free_buf;
+		}
+	}
+	ret = kstrtoint(buf, 16, &function);
+	if (ret) {
+		pr_err("please supply function ID for PCI p2p establishment\n");
+		goto free_buf;
+	}
+	kfree(orig_buf);
+
+	pdev = pci_get_domain_bus_and_slot(domain, bus,
+					   PCI_DEVFN(slot, function));
+	if (pdev)
+		ns->pdev = pdev;
+	else
+		ret = -EAGAIN;
+
+out:
+	mutex_unlock(&subsys->lock);
+	return ret ? ret : count;
+
+free_buf:
+	kfree(orig_buf);
+out_unlock:
+	mutex_unlock(&subsys->lock);
+	return ret;
+}
+
+CONFIGFS_ATTR(nvmet_ns_, pci_device_path);
+
+
 static struct configfs_attribute *nvmet_ns_attrs[] = {
 	&nvmet_ns_attr_device_path,
 	&nvmet_ns_attr_device_nguid,
 	&nvmet_ns_attr_enable,
+	&nvmet_ns_attr_pci_device_path,
 	NULL,
 };
 
@@ -464,9 +554,21 @@ static int nvmet_port_subsys_allow_link(struct config_item *parent,
 	}
 
 	if (list_empty(&port->subsystems)) {
-		ret = nvmet_enable_port(port);
+		ret = nvmet_enable_port(port, subsys->offloadble);
 		if (ret)
 			goto out_free_link;
+	} else if (port->offload) {
+		/*
+		 * This limitation exists only in 1.0 spec.
+		 * Spec 1.1 solved it by passing CNTLID in private data format.
+		 */
+		pr_err("Offloaded port restricted to have one subsytem enabled\n");
+		ret = -EINVAL;
+		goto out_free_link;
+	} else if (port->offload != subsys->offloadble) {
+		pr_err("can only link subsystems to ports with the same offloadble polarity\n");
+		ret = -EINVAL;
+		goto out_free_link;
 	}
 
 	list_add_tail(&link->entry, &port->subsystems);

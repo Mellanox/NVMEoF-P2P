@@ -22,6 +22,8 @@
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/nvme.h>
+#include <linux/nvme-peer.h>
+#include <linux/pci.h>
 #include <linux/configfs.h>
 #include <linux/rcupdate.h>
 #include <linux/blkdev.h>
@@ -42,6 +44,7 @@ struct nvmet_ns {
 	struct list_head	dev_link;
 	struct percpu_ref	ref;
 	struct block_device	*bdev;
+	struct pci_dev		*pdev;
 	u32			nsid;
 	u32			blksize_shift;
 	loff_t			size;
@@ -55,6 +58,8 @@ struct nvmet_ns {
 	struct config_group	group;
 
 	struct completion	disable_done;
+
+	bool			offloadble;
 };
 
 static inline struct nvmet_ns *to_nvmet_ns(struct config_item *item)
@@ -95,6 +100,7 @@ struct nvmet_port {
 	struct list_head		referrals;
 	void				*priv;
 	bool				enabled;
+	bool				offload;
 };
 
 static inline struct nvmet_port *to_nvmet_port(struct config_item *item)
@@ -105,6 +111,7 @@ static inline struct nvmet_port *to_nvmet_port(struct config_item *item)
 
 struct nvmet_ctrl {
 	struct nvmet_subsys	*subsys;
+	struct nvmet_port	*port;
 	struct nvmet_cq		**cqs;
 	struct nvmet_sq		**sqs;
 
@@ -131,6 +138,8 @@ struct nvmet_ctrl {
 
 	char			subsysnqn[NVMF_NQN_FIELD_LEN];
 	char			hostnqn[NVMF_NQN_FIELD_LEN];
+
+	unsigned int		sqe_inline_size;
 };
 
 struct nvmet_subsys {
@@ -156,6 +165,8 @@ struct nvmet_subsys {
 
 	struct config_group	namespaces_group;
 	struct config_group	allowed_hosts_group;
+
+	bool			offloadble;
 };
 
 static inline struct nvmet_subsys *to_subsys(struct config_item *item)
@@ -205,6 +216,11 @@ struct nvmet_fabrics_ops {
 	int (*add_port)(struct nvmet_port *port);
 	void (*remove_port)(struct nvmet_port *port);
 	void (*delete_ctrl)(struct nvmet_ctrl *ctrl);
+	bool (*peer_to_peer_capable)(struct nvmet_port *port);
+	int (*install_offload_queue)(struct nvmet_ctrl *ctrl, u16 qid);
+	int (*create_offload_ctrl)(struct nvmet_ctrl *ctrl);
+	void (*destroy_offload_ctrl)(struct nvmet_ctrl *ctrl);
+	unsigned int (*peer_to_peer_sqe_inline_size)(struct nvmet_ctrl *ctrl);
 };
 
 #define NVMET_MAX_INLINE_BIOVEC	8
@@ -296,7 +312,7 @@ void nvmet_ns_free(struct nvmet_ns *ns);
 int nvmet_register_transport(struct nvmet_fabrics_ops *ops);
 void nvmet_unregister_transport(struct nvmet_fabrics_ops *ops);
 
-int nvmet_enable_port(struct nvmet_port *port);
+int nvmet_enable_port(struct nvmet_port *port, bool offloadble);
 void nvmet_disable_port(struct nvmet_port *port);
 
 void nvmet_referral_enable(struct nvmet_port *parent, struct nvmet_port *port);

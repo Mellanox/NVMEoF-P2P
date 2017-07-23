@@ -646,6 +646,11 @@ static int mlx5_ib_query_device(struct ib_device *ibdev,
 	if (MLX5_CAP_GEN(mdev, block_lb_mc))
 		props->device_cap_flags |= IB_DEVICE_BLOCK_MULTICAST_LOOPBACK;
 
+	if (MLX5_CAP_GEN(mdev, nvmf_target_offload)) {
+		props->device_cap_flags |= IB_DEVICE_NVMF_TARGET_OFFLOAD;
+		props->nvmf_caps = dev->nvmf_caps;
+	}
+
 	if (MLX5_CAP_GEN(dev->mdev, eth_net_offloads)) {
 		if (MLX5_CAP_ETH(mdev, csum_cap)) {
 			/* Legacy bit to support old userspace libraries */
@@ -3050,7 +3055,7 @@ static int create_dev_resources(struct mlx5_ib_resources *devr)
 	attr.attr.max_sge = 1;
 	attr.attr.max_wr = 1;
 	attr.srq_type = IB_SRQT_XRC;
-	attr.ext.xrc.cq = devr->c0;
+	attr.ext.cq = devr->c0;
 	attr.ext.xrc.xrcd = devr->x0;
 
 	devr->s0 = mlx5_ib_create_srq(devr->p0, &attr, NULL);
@@ -3065,9 +3070,9 @@ static int create_dev_resources(struct mlx5_ib_resources *devr)
 	devr->s0->srq_context   = NULL;
 	devr->s0->srq_type      = IB_SRQT_XRC;
 	devr->s0->ext.xrc.xrcd	= devr->x0;
-	devr->s0->ext.xrc.cq	= devr->c0;
+	devr->s0->ext.cq	= devr->c0;
 	atomic_inc(&devr->s0->ext.xrc.xrcd->usecnt);
-	atomic_inc(&devr->s0->ext.xrc.cq->usecnt);
+	atomic_inc(&devr->s0->ext.cq->usecnt);
 	atomic_inc(&devr->p0->usecnt);
 	atomic_set(&devr->s0->usecnt, 0);
 
@@ -3086,7 +3091,7 @@ static int create_dev_resources(struct mlx5_ib_resources *devr)
 	devr->s1->event_handler = NULL;
 	devr->s1->srq_context   = NULL;
 	devr->s1->srq_type      = IB_SRQT_BASIC;
-	devr->s1->ext.xrc.cq	= devr->c0;
+	devr->s1->ext.cq	= devr->c0;
 	atomic_inc(&devr->p0->usecnt);
 	atomic_set(&devr->s0->usecnt, 0);
 
@@ -3704,6 +3709,15 @@ static void *mlx5_ib_add(struct mlx5_core_dev *mdev)
 	}
 
 	dev->ib_dev.disassociate_ucontext = mlx5_ib_disassociate_ucontext;
+
+	if (MLX5_CAP_GEN(mdev, nvmf_target_offload)) {
+		dev->ib_dev.create_nvmf_backend_ctrl  = mlx5_ib_create_nvmf_backend_ctrl;
+		dev->ib_dev.destroy_nvmf_backend_ctrl = mlx5_ib_destroy_nvmf_backend_ctrl;
+		dev->ib_dev.attach_nvmf_ns            = mlx5_ib_attach_nvmf_ns;
+		dev->ib_dev.detach_nvmf_ns            = mlx5_ib_detach_nvmf_ns;
+
+		mlx5_ib_internal_fill_nvmf_caps(dev);
+	}
 
 	mlx5_ib_internal_fill_odp_caps(dev);
 

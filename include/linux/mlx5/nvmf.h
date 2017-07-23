@@ -30,62 +30,61 @@
  * SOFTWARE.
  */
 
-#ifndef MLX5_SRQ_H
-#define MLX5_SRQ_H
+#ifndef MLX5_NVMF_H
+#define MLX5_NVMF_H
 
 #include <linux/mlx5/driver.h>
 
-enum {
-	MLX5_SRQ_FLAG_ERR    = (1 << 0),
-	MLX5_SRQ_FLAG_WQ_SIG = (1 << 1),
-	MLX5_SRQ_FLAG_RNDV   = (1 << 2),
+struct mlx5_be_ctrl_attr {
+	u32	cq_page_offset;
+	u32	sq_page_offset;
+	u8	cq_log_page_size;
+	u8	sq_log_page_size;
+	u16	initial_cqh_db_value;
+	u16	initial_sqt_db_value;
+	u64	cqh_dbr_addr;
+	u64	sqt_dbr_addr;
+	u64	cq_pas;
+	u64	sq_pas;
 };
 
-enum mlx5_nvmf_offload_type {
-	MLX5_NVMF_WRITE_OFFLOAD			= 1,
-	MLX5_NVMF_READ_OFFLOAD			= 2,
-	MLX5_NVMF_READ_WRITE_OFFLOAD		= 3,
-	MLX5_NVMF_READ_WRITE_FLUSH_OFFLOAD	= 4,
+struct mlx5_ns_attr {
+	u32	frontend_namespace;
+	u32	backend_namespace;
+	u16	lba_data_size;
+	u16	backend_ctrl_id;
 };
 
-struct mlx5_nvmf_attr {
-	enum mlx5_nvmf_offload_type	type;
-	u8				log_max_namespace;
-	u32				offloaded_capsules_count;
-	u32				ioccsz;
-	u8				icdoff;
-	u8				log_max_io_size;
-	u8				nvme_memory_log_page_size;
-	u8				staging_buffer_log_page_size;
-	u16				staging_buffer_number_of_pages;
-	u8				staging_buffer_page_offset;
-	u16				nvme_queue_size;
-	u64				*staging_buffer_pas;
+struct mlx5_core_nvmf_be_ctrl {
+	int			id;
+	spinlock_t		lock;
+	struct list_head	ns_list;
 };
 
-struct mlx5_srq_attr {
-	u32 type;
-	u32 flags;
-	u32 log_size;
-	u32 wqe_shift;
-	u32 log_page_size;
-	u32 wqe_cnt;
-	u32 srqn;
-	u32 xrcd;
-	u32 page_offset;
-	u32 cqn;
-	u32 pd;
-	u32 lwm;
-	u32 user_index;
-	u64 db_record;
-	__be64 *pas;
-	u32 tm_log_list_size;
-	struct mlx5_nvmf_attr nvmf;
+struct mlx5_core_nvmf_ns {
+	u32			frontend_nsid;
+	u32			backend_nsid;
+	struct list_head	entry;
 };
 
-struct mlx5_core_dev;
+int mlx5_core_create_nvmf_backend_ctrl(struct mlx5_core_dev *dev,
+				       struct mlx5_core_srq *srq,
+				       struct mlx5_core_nvmf_be_ctrl *ctrl,
+				       struct mlx5_be_ctrl_attr *in);
 
-void mlx5_init_srq_table(struct mlx5_core_dev *dev);
-void mlx5_cleanup_srq_table(struct mlx5_core_dev *dev);
+int mlx5_core_destroy_nvmf_backend_ctrl(struct mlx5_core_dev *dev,
+					struct mlx5_core_srq *srq,
+					struct mlx5_core_nvmf_be_ctrl *ctrl);
 
-#endif /* MLX5_SRQ_H */
+int mlx5_core_attach_nvmf_ns(struct mlx5_core_dev *dev,
+			     struct mlx5_core_srq *srq,
+			     struct mlx5_core_nvmf_be_ctrl *ctrl,
+			     struct mlx5_core_nvmf_ns *ns,
+			     struct mlx5_ns_attr *attr_in);
+
+int mlx5_core_detach_nvmf_ns(struct mlx5_core_dev *dev,
+			     struct mlx5_core_srq *srq,
+			     struct mlx5_core_nvmf_be_ctrl *ctrl,
+			     struct mlx5_core_nvmf_ns *ns);
+
+#endif /* MLX5_NVMF_H */

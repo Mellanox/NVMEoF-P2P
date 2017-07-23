@@ -78,6 +78,61 @@ static int get_pas_size(struct mlx5_srq_attr *in)
 	return rq_num_pas * sizeof(u64);
 }
 
+static int get_nvmf_pas_size(struct mlx5_nvmf_attr *nvmf)
+{
+	return nvmf->staging_buffer_number_of_pages * MLX5_PAS_ALIGN;
+}
+
+static void set_nvmf_srq_pas(struct mlx5_nvmf_attr *nvmf,
+			     void *start,
+			     int align)
+{
+	int i;
+	dma_addr_t dma_addr_be;
+
+	for (i = 0; i < nvmf->staging_buffer_number_of_pages; i++) {
+		dma_addr_be = cpu_to_be64(nvmf->staging_buffer_pas[i]);
+		memcpy(start + i * align, &dma_addr_be, sizeof(u64));
+	}
+}
+
+static void set_nvmf_xrq_context(struct mlx5_nvmf_attr *nvmf, void *xrqc)
+{
+	MLX5_SET(xrqc, xrqc,
+		 nvme_offload_context.nvmf_offload_type,
+		 nvmf->type);
+	MLX5_SET(xrqc, xrqc,
+		 nvme_offload_context.log_max_namespace,
+		 nvmf->log_max_namespace);
+	MLX5_SET(xrqc, xrqc,
+		 nvme_offload_context.offloaded_capsules_count,
+		 nvmf->offloaded_capsules_count);
+	MLX5_SET(xrqc, xrqc,
+		 nvme_offload_context.ioccsz,
+		 nvmf->ioccsz);
+	MLX5_SET(xrqc, xrqc,
+		 nvme_offload_context.icdoff,
+		 nvmf->icdoff);
+	MLX5_SET(xrqc, xrqc,
+		 nvme_offload_context.log_max_io_size,
+		 nvmf->log_max_io_size);
+	MLX5_SET(xrqc, xrqc,
+		 nvme_offload_context.nvme_memory_log_page_size,
+		 nvmf->nvme_memory_log_page_size);
+	MLX5_SET(xrqc, xrqc,
+		 nvme_offload_context.staging_buffer_log_page_size,
+		 nvmf->staging_buffer_log_page_size);
+	MLX5_SET(xrqc, xrqc,
+		 nvme_offload_context.staging_buffer_number_of_pages,
+		 nvmf->staging_buffer_number_of_pages);
+	MLX5_SET(xrqc, xrqc,
+		 nvme_offload_context.staging_buffer_page_offset,
+		 nvmf->staging_buffer_page_offset);
+	MLX5_SET(xrqc, xrqc,
+		 nvme_offload_context.nvme_queue_size,
+		 nvmf->nvme_queue_size);
+}
+
 static void set_wq(void *wq, struct mlx5_srq_attr *in)
 {
 	MLX5_SET(wq,   wq, wq_signature,  !!(in->flags
@@ -435,16 +490,121 @@ out:
 	return err;
 }
 
+static int create_xrq_cmd(struct mlx5_core_dev *dev, struct mlx5_core_srq *srq,
+			  struct mlx5_srq_attr *in)
+{
+	u32 create_out[MLX5_ST_SZ_DW(create_xrq_out)] = {0};
+	void *create_in;
+	void *xrqc;
+	void *wq;
+	int pas_size, rq_pas_size;
+	int inlen;
+	void *rq_pas_addr;
+	int err;
+
+	rq_pas_size = get_pas_size(in);
+	if (in->type == IB_EXP_SRQT_NVMF)
+		pas_size = roundup(rq_pas_size, MLX5_PAS_ALIGN) +
+			   roundup(get_nvmf_pas_size(&in->nvmf), MLX5_PAS_ALIGN);
+	else if (in->type == IB_EXP_SRQT_TAG_MATCHING)
+		pas_size = rq_pas_size;
+	else
+		return -EINVAL;
+
+	inlen = MLX5_ST_SZ_BYTES(create_xrq_in) + pas_size;
+	create_in = mlx5_vzalloc(inlen);
+	if (!create_in)
+		return -ENOMEM;
+
+	xrqc = MLX5_ADDR_OF(create_xrq_in, create_in, xrq_context);
+	wq = MLX5_ADDR_OF(xrqc, xrqc, wq);
+
+	set_wq(wq, in);
+	rq_pas_addr = MLX5_ADDR_OF(xrqc, xrqc, wq.pas);
+	memcpy(rq_pas_addr, in->pas, rq_pas_size);
+
+	if (in->type == IB_EXP_SRQT_TAG_MATCHING) {
+		MLX5_SET(xrqc, xrqc, topology, MLX5_XRQC_TOPOLOGY_TAG_MATCHING);
+		if (in->flags & MLX5_SRQ_FLAG_RNDV)
+			MLX5_SET(xrqc, xrqc, offload, MLX5_XRQC_OFFLOAD_RNDV);
+		MLX5_SET(xrqc, xrqc,
+			 tag_matching_topology_context.log_matching_list_sz,
+			 in->tm_log_list_size);
+	} else if (in->type == IB_EXP_SRQT_NVMF) {
+		MLX5_SET(xrqc, xrqc, offload, MLX5_XRQC_OFFLOAD_NVMF);
+		set_nvmf_srq_pas(&in->nvmf,
+				 rq_pas_addr + roundup(rq_pas_size, MLX5_PAS_ALIGN),
+				 MLX5_PAS_ALIGN);
+		set_nvmf_xrq_context(&in->nvmf, xrqc);
+	}
+
+	MLX5_SET(xrqc, xrqc, user_index, in->user_index);
+	MLX5_SET(xrqc, xrqc, cqn, in->cqn);
+	MLX5_SET(create_xrq_in, create_in, opcode, MLX5_CMD_OP_CREATE_XRQ);
+	err = mlx5_cmd_exec(dev, create_in, inlen, create_out,
+			    sizeof(create_out));
+	kvfree(create_in);
+	if (!err)
+		srq->srqn = MLX5_GET(create_xrq_out, create_out, xrqn);
+
+	return err;
+}
+
+static int destroy_xrq_cmd(struct mlx5_core_dev *dev, struct mlx5_core_srq *srq)
+{
+	u32 in[MLX5_ST_SZ_DW(destroy_xrq_in)] = {0};
+	u32 out[MLX5_ST_SZ_DW(destroy_xrq_out)] = {0};
+
+	MLX5_SET(destroy_xrq_in, in, opcode, MLX5_CMD_OP_DESTROY_XRQ);
+	MLX5_SET(destroy_xrq_in, in, xrqn,   srq->srqn);
+
+	return mlx5_cmd_exec(dev, in, sizeof(in), out, sizeof(out));
+}
+
+static int query_xrq_cmd(struct mlx5_core_dev *dev, struct mlx5_core_srq *srq,
+			 struct mlx5_srq_attr *out)
+{
+	u32 in[MLX5_ST_SZ_DW(query_xrq_in)] = {0};
+	u32 *xrq_out;
+	int outlen = MLX5_ST_SZ_BYTES(query_xrq_out);
+	void *xrqc;
+	int err;
+
+	xrq_out =  mlx5_vzalloc(outlen);
+	if (!xrq_out)
+		return -ENOMEM;
+
+	MLX5_SET(query_xrq_in, in, opcode, MLX5_CMD_OP_QUERY_XRQ);
+	MLX5_SET(query_xrq_in, in, xrqn, srq->srqn);
+
+	err = mlx5_cmd_exec(dev, in, sizeof(in), xrq_out, outlen);
+	if (err)
+		goto out;
+
+	xrqc = MLX5_ADDR_OF(query_xrq_out, xrq_out, xrq_context);
+	get_wq(MLX5_ADDR_OF(xrqc, xrqc, wq), out);
+	if (MLX5_GET(xrqc, xrqc, state) != MLX5_XRQC_STATE_GOOD)
+		out->flags |= MLX5_SRQ_FLAG_ERR;
+
+out:
+	kvfree(xrq_out);
+	return err;
+}
+
 static int create_srq_split(struct mlx5_core_dev *dev,
 			    struct mlx5_core_srq *srq,
 			    struct mlx5_srq_attr *in)
 {
 	if (!dev->issi)
 		return create_srq_cmd(dev, srq, in);
-	else if (srq->common.res == MLX5_RES_XSRQ)
+	switch (srq->common.res) {
+	case MLX5_RES_XSRQ:
 		return create_xrc_srq_cmd(dev, srq, in);
-	else
+	case MLX5_RES_XRQ:
+		return create_xrq_cmd(dev, srq, in);
+	default:
 		return create_rmp_cmd(dev, srq, in);
+	}
 }
 
 static int destroy_srq_split(struct mlx5_core_dev *dev,
@@ -452,10 +612,14 @@ static int destroy_srq_split(struct mlx5_core_dev *dev,
 {
 	if (!dev->issi)
 		return destroy_srq_cmd(dev, srq);
-	else if (srq->common.res == MLX5_RES_XSRQ)
+	switch (srq->common.res) {
+	case MLX5_RES_XSRQ:
 		return destroy_xrc_srq_cmd(dev, srq);
-	else
+	case MLX5_RES_XRQ:
+		return destroy_xrq_cmd(dev, srq);
+	default:
 		return destroy_rmp_cmd(dev, srq);
+	}
 }
 
 int mlx5_core_create_srq(struct mlx5_core_dev *dev, struct mlx5_core_srq *srq,
@@ -464,10 +628,17 @@ int mlx5_core_create_srq(struct mlx5_core_dev *dev, struct mlx5_core_srq *srq,
 	int err;
 	struct mlx5_srq_table *table = &dev->priv.srq_table;
 
-	if (in->type == IB_SRQT_XRC)
+	switch (in->type) {
+	case IB_SRQT_XRC:
 		srq->common.res = MLX5_RES_XSRQ;
-	else
+		break;
+	case IB_EXP_SRQT_TAG_MATCHING:
+	case IB_EXP_SRQT_NVMF:
+		srq->common.res = MLX5_RES_XRQ;
+		break;
+	default:
 		srq->common.res = MLX5_RES_SRQ;
+	}
 
 	err = create_srq_split(dev, srq, in);
 	if (err)
@@ -528,10 +699,14 @@ int mlx5_core_query_srq(struct mlx5_core_dev *dev, struct mlx5_core_srq *srq,
 {
 	if (!dev->issi)
 		return query_srq_cmd(dev, srq, out);
-	else if (srq->common.res == MLX5_RES_XSRQ)
+	switch (srq->common.res) {
+	case MLX5_RES_XSRQ:
 		return query_xrc_srq_cmd(dev, srq, out);
-	else
+	case MLX5_RES_XRQ:
+		return query_xrq_cmd(dev, srq, out);
+	default:
 		return query_rmp_cmd(dev, srq, out);
+	}
 }
 EXPORT_SYMBOL(mlx5_core_query_srq);
 
@@ -540,10 +715,14 @@ int mlx5_core_arm_srq(struct mlx5_core_dev *dev, struct mlx5_core_srq *srq,
 {
 	if (!dev->issi)
 		return arm_srq_cmd(dev, srq, lwm, is_srq);
-	else if (srq->common.res == MLX5_RES_XSRQ)
+	switch (srq->common.res) {
+	case MLX5_RES_XSRQ:
 		return arm_xrc_srq_cmd(dev, srq, lwm);
-	else
+	case MLX5_RES_XRQ:
+		return -ENOSYS;
+	default:
 		return arm_rmp_cmd(dev, srq, lwm);
+	}
 }
 EXPORT_SYMBOL(mlx5_core_arm_srq);
 

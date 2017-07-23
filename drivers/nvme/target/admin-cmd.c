@@ -203,8 +203,11 @@ static void nvmet_execute_identify_ctrl(struct nvmet_req *req)
 	/* we support multiple ports and multiples hosts: */
 	id->cmic = (1 << 0) | (1 << 1);
 
-	/* no limit on data transfer sizes for now */
-	id->mdts = 0;
+	/*
+	 * limit the data transfer size in offload case to 128k for now
+	 * otherwise, no limit
+	 */
+	id->mdts = req->port->offload ? 5 : 0;
 	id->cntlid = cpu_to_le16(ctrl->cntlid);
 	id->ver = cpu_to_le32(ctrl->subsys->ver);
 
@@ -255,14 +258,14 @@ static void nvmet_execute_identify_ctrl(struct nvmet_req *req)
 	id->sgls = cpu_to_le32(1 << 0);	/* we always support SGLs */
 	if (ctrl->ops->has_keyed_sgls)
 		id->sgls |= cpu_to_le32(1 << 2);
-	if (ctrl->ops->sqe_inline_size)
+	if (ctrl->sqe_inline_size)
 		id->sgls |= cpu_to_le32(1 << 20);
 
 	strcpy(id->subnqn, ctrl->subsys->subsysnqn);
 
 	/* Max command capsule size is sqe + single page of in-capsule data */
 	id->ioccsz = cpu_to_le32((sizeof(struct nvme_command) +
-				  ctrl->ops->sqe_inline_size) / 16);
+				  ctrl->sqe_inline_size) / 16);
 	/* Max response capsule size is cqe */
 	id->iorcsz = cpu_to_le32(sizeof(struct nvme_completion) / 16);
 

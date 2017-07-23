@@ -623,11 +623,13 @@ struct ib_srq *ib_create_srq(struct ib_pd *pd,
 		srq->event_handler = srq_init_attr->event_handler;
 		srq->srq_context   = srq_init_attr->srq_context;
 		srq->srq_type      = srq_init_attr->srq_type;
+		if (ib_srq_has_cq(srq->srq_type)) {
+			srq->ext.cq   = srq_init_attr->ext.cq;
+			atomic_inc(&srq->ext.cq->usecnt);
+		}
 		if (srq->srq_type == IB_SRQT_XRC) {
 			srq->ext.xrc.xrcd = srq_init_attr->ext.xrc.xrcd;
-			srq->ext.xrc.cq   = srq_init_attr->ext.xrc.cq;
 			atomic_inc(&srq->ext.xrc.xrcd->usecnt);
-			atomic_inc(&srq->ext.xrc.cq->usecnt);
 		}
 		atomic_inc(&pd->usecnt);
 		atomic_set(&srq->usecnt, 0);
@@ -668,18 +670,18 @@ int ib_destroy_srq(struct ib_srq *srq)
 
 	pd = srq->pd;
 	srq_type = srq->srq_type;
-	if (srq_type == IB_SRQT_XRC) {
+	if (ib_srq_has_cq(srq_type))
+		cq = srq->ext.cq;
+	if (srq_type == IB_SRQT_XRC)
 		xrcd = srq->ext.xrc.xrcd;
-		cq = srq->ext.xrc.cq;
-	}
 
 	ret = srq->device->destroy_srq(srq);
 	if (!ret) {
 		atomic_dec(&pd->usecnt);
-		if (srq_type == IB_SRQT_XRC) {
+		if (srq_type == IB_SRQT_XRC)
 			atomic_dec(&xrcd->usecnt);
+		if (ib_srq_has_cq(srq_type))
 			atomic_dec(&cq->usecnt);
-		}
 	}
 
 	return ret;
@@ -1005,7 +1007,8 @@ static const struct {
 						 IB_QP_ALT_PATH			|
 						 IB_QP_ACCESS_FLAGS		|
 						 IB_QP_MIN_RNR_TIMER		|
-						 IB_QP_PATH_MIG_STATE),
+						 IB_QP_PATH_MIG_STATE		|
+						 IB_QP_OFFLOAD_TYPE),
 				 [IB_QPT_XRC_INI] = (IB_QP_CUR_STATE		|
 						 IB_QP_ALT_PATH			|
 						 IB_QP_ACCESS_FLAGS		|
@@ -1039,7 +1042,8 @@ static const struct {
 						IB_QP_ACCESS_FLAGS		|
 						IB_QP_ALT_PATH			|
 						IB_QP_PATH_MIG_STATE		|
-						IB_QP_MIN_RNR_TIMER),
+						IB_QP_MIN_RNR_TIMER		|
+						IB_QP_OFFLOAD_TYPE),
 				[IB_QPT_XRC_INI] = (IB_QP_CUR_STATE		|
 						IB_QP_ACCESS_FLAGS		|
 						IB_QP_ALT_PATH			|
@@ -2099,3 +2103,77 @@ void ib_drain_qp(struct ib_qp *qp)
 		ib_drain_rq(qp);
 }
 EXPORT_SYMBOL(ib_drain_qp);
+
+/* NVMEoF target offload */
+
+struct ib_nvmf_ctrl *ib_create_nvmf_backend_ctrl(struct ib_srq *srq,
+			struct ib_nvmf_backend_ctrl_init_attr *init_attr)
+{
+	struct ib_nvmf_ctrl *ctrl;
+
+	if (!srq->device->create_nvmf_backend_ctrl)
+		return ERR_PTR(-ENOSYS);
+	if (srq->srq_type != IB_EXP_SRQT_NVMF)
+		return ERR_PTR(-EINVAL);
+
+	ctrl = srq->device->create_nvmf_backend_ctrl(srq, init_attr);
+	if (!IS_ERR(ctrl)) {
+		atomic_set(&ctrl->usecnt, 0);
+		ctrl->srq   = srq;
+		atomic_inc(&srq->usecnt);
+	}
+
+	return ctrl;
+}
+EXPORT_SYMBOL_GPL(ib_create_nvmf_backend_ctrl);
+
+int ib_destroy_nvmf_backend_ctrl(struct ib_nvmf_ctrl *ctrl)
+{
+	struct ib_srq *srq = ctrl->srq;
+	int ret;
+
+	if (atomic_read(&ctrl->usecnt))
+		return -EBUSY;
+
+	ret = srq->device->destroy_nvmf_backend_ctrl(ctrl);
+	if (!ret)
+		atomic_dec(&srq->usecnt);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(ib_destroy_nvmf_backend_ctrl);
+
+struct ib_nvmf_ns *ib_attach_nvmf_ns(struct ib_nvmf_ctrl *ctrl,
+			struct ib_nvmf_ns_init_attr *init_attr)
+{
+	struct ib_srq *srq = ctrl->srq;
+	struct ib_nvmf_ns *ns;
+
+	if (!srq->device->attach_nvmf_ns)
+		return ERR_PTR(-ENOSYS);
+	if (srq->srq_type != IB_EXP_SRQT_NVMF)
+		return ERR_PTR(-EINVAL);
+
+	ns = srq->device->attach_nvmf_ns(ctrl, init_attr);
+	if (!IS_ERR(ns)) {
+		ns->ctrl   = ctrl;
+		atomic_inc(&ctrl->usecnt);
+	}
+
+	return ns;
+}
+EXPORT_SYMBOL_GPL(ib_attach_nvmf_ns);
+
+int ib_detach_nvmf_ns(struct ib_nvmf_ns *ns)
+{
+	struct ib_nvmf_ctrl *ctrl = ns->ctrl;
+	struct ib_srq *srq = ctrl->srq;
+	int ret;
+
+	ret = srq->device->detach_nvmf_ns(ns);
+	if (!ret)
+		atomic_dec(&ctrl->usecnt);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(ib_detach_nvmf_ns);
