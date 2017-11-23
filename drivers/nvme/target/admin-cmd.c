@@ -202,10 +202,13 @@ static void nvmet_execute_identify_ctrl(struct nvmet_req *req)
 	id->cmic = (1 << 0) | (1 << 1);
 
 	/*
-	 * limit the data transfer size in offload case to 128k for now
-	 * otherwise, no limit
+	 * limit the data transfer size in offload case according to device
+	 * capability.
 	 */
-	id->mdts = req->port->offload ? 5 : 0;
+	if (req->port->offload)
+		id->mdts = ctrl->ops->peer_to_peer_mdts(req->port);
+	else
+		id->mdts = 0;
 	id->cntlid = cpu_to_le16(ctrl->cntlid);
 	id->ver = cpu_to_le32(ctrl->subsys->ver);
 
