@@ -337,6 +337,12 @@ int nvmet_ns_enable(struct nvmet_ns *ns)
 		pci_dev_get(ns->pdev);
 	}
 
+	if (ns->pdev && !list_empty(&subsys->namespaces)) {
+		pr_err("Offloaded subsystem doesn't support many namespaces\n");
+		ret = -EINVAL;
+		goto out_pdev_put;
+	}
+
 	ret = percpu_ref_init(&ns->ref, nvmet_destroy_namespace,
 				0, GFP_KERNEL);
 	if (ret)
