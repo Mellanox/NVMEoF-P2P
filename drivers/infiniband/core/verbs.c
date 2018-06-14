@@ -1957,6 +1957,7 @@ int ib_dereg_mr(struct ib_mr *mr)
 {
 	struct ib_pd *pd = mr->pd;
 	struct ib_dm *dm = mr->dm;
+	struct ib_sig_attrs *sig_attrs = mr->sig_attrs;
 	int ret;
 
 	rdma_restrack_del(&mr->res);
@@ -1965,6 +1966,7 @@ int ib_dereg_mr(struct ib_mr *mr)
 		atomic_dec(&pd->usecnt);
 		if (dm)
 			atomic_dec(&dm->usecnt);
+		kfree(sig_attrs);
 	}
 
 	return ret;
@@ -2006,6 +2008,7 @@ struct ib_mr *ib_alloc_mr(struct ib_pd *pd,
 		mr->res.type = RDMA_RESTRACK_MR;
 		rdma_restrack_kadd(&mr->res);
 		mr->type = mr_type;
+		mr->sig_attrs = NULL;
 	}
 
 	return mr;
@@ -2029,6 +2032,7 @@ struct ib_mr *ib_alloc_mr_integrity(struct ib_pd *pd,
 				    u32 max_num_meta_sg)
 {
 	struct ib_mr *mr;
+	struct ib_sig_attrs *sig_attrs;
 
 	if (!pd->device->ops.alloc_mr_integrity ||
 	    !pd->device->ops.map_mr_sg_pi)
@@ -2037,10 +2041,16 @@ struct ib_mr *ib_alloc_mr_integrity(struct ib_pd *pd,
 	if (!max_num_meta_sg)
 		return ERR_PTR(-EINVAL);
 
+	sig_attrs = kzalloc(sizeof(struct ib_sig_attrs), GFP_KERNEL);
+	if (!sig_attrs)
+		return ERR_PTR(-ENOMEM);
+
 	mr = pd->device->ops.alloc_mr_integrity(pd, max_num_data_sg,
 						max_num_meta_sg);
-	if (IS_ERR(mr))
+	if (IS_ERR(mr)) {
+		kfree(sig_attrs);
 		return mr;
+	}
 
 	mr->device = pd->device;
 	mr->pd = pd;
@@ -2051,6 +2061,7 @@ struct ib_mr *ib_alloc_mr_integrity(struct ib_pd *pd,
 	mr->res.type = RDMA_RESTRACK_MR;
 	rdma_restrack_kadd(&mr->res);
 	mr->type = IB_MR_TYPE_INTEGRITY;
+	mr->sig_attrs = sig_attrs;
 
 	return mr;
 }
