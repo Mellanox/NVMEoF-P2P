@@ -1223,6 +1223,8 @@ struct ib_qp *ib_create_qp(struct ib_pd *pd,
 	qp->max_write_sge = qp_init_attr->cap.max_send_sge;
 	qp->max_read_sge = min_t(u32, qp_init_attr->cap.max_send_sge,
 				 device->attrs.max_sge_rd);
+	if (qp_init_attr->create_flags & IB_QP_CREATE_SIGNATURE_EN)
+		qp->signature_en = true;
 
 	return qp;
 

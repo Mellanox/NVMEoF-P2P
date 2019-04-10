@@ -1688,6 +1688,7 @@ struct ib_qp {
 	struct ib_qp_security  *qp_sec;
 	u8			port;
 
+	bool			signature_en;
 	/*
 	 * Implementation details of the RDMA core, don't use in drivers:
 	 */
