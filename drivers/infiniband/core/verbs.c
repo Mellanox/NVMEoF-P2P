@@ -1142,10 +1142,12 @@ struct ib_qp *ib_create_qp(struct ib_pd *pd,
 	struct ib_qp *qp;
 	int ret;
 
-	if (qp_init_attr->rwq_ind_tbl &&
+	if ((qp_init_attr->rwq_ind_tbl &&
 	    (qp_init_attr->recv_cq ||
 	    qp_init_attr->srq || qp_init_attr->cap.max_recv_wr ||
-	    qp_init_attr->cap.max_recv_sge))
+	    qp_init_attr->cap.max_recv_sge)) ||
+	    ((qp_init_attr->create_flags & IB_QP_CREATE_SIGNATURE_EN) &&
+	     !(device->attrs.device_cap_flags & IB_DEVICE_SIGNATURE_HANDOVER)))
 		return ERR_PTR(-EINVAL);
 
 	/*
