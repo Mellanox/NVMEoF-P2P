@@ -26,6 +26,13 @@ MODULE_PARM_DESC(ids, "Initial PCI IDs to add to the stub driver, format is "
 		 "\"vendor:device[:subvendor[:subdevice[:class[:class_mask]]]]\""
 		 " and multiple comma separated entries can be specified");
 
+static const struct pci_device_id stub_pci_table[] = {
+	{ PCI_DEVICE_FLAGS(PCI_ANY_ID, PCI_ANY_ID, PCI_ID_F_STUB_DRIVER_OVERRIDE) }, /* match all by default */
+	{ 0, }
+};
+
+MODULE_DEVICE_TABLE(pci, stub_pci_table);
+
 static int pci_stub_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	pci_info(dev, "claimed by stub\n");
@@ -34,7 +41,7 @@ static int pci_stub_probe(struct pci_dev *dev, const struct pci_device_id *id)
 
 static struct pci_driver stub_driver = {
 	.name		= "pci-stub",
-	.id_table	= NULL,	/* only dynamic id's */
+	.id_table	= stub_pci_table,
 	.probe		= pci_stub_probe,
 };
 

@@ -19,6 +19,7 @@
  */
 static const struct pci_device_id pci_pf_stub_whitelist[] = {
 	{ PCI_VDEVICE(AMAZON, 0x0053) },
+	{ PCI_DEVICE_FLAGS(PCI_ANY_ID, PCI_ANY_ID, PCI_ID_F_STUB_DRIVER_OVERRIDE) }, /* match all by default (override) */
 	/* required last entry */
 	{ 0 }
 };
